@@ -1683,7 +1683,7 @@ public class HiveConf extends Configuration {
         "How many rows with the same key value should be cached in memory per smb joined table."),
     HIVEGROUPBYMAPINTERVAL("hive.groupby.mapaggr.checkinterval", 100000,
         "Number of rows after which size of the grouping keys/aggregation classes is performed"),
-    HIVEMAPAGGRHASHMEMORY("hive.map.aggr.hash.percentmemory", (float) 0.5,
+    HIVEMAPAGGRHASHMEMORY("hive.map.aggr.hash.percentmemory", (float) 0.99,
         "Portion of total memory to be used by map-side group aggregation hash table"),
     HIVEMAPJOINFOLLOWEDBYMAPAGGRHASHMEMORY("hive.mapjoin.followby.map.aggr.hash.percentmemory", (float) 0.3,
         "Portion of total memory to be used by map-side group aggregation hash table, when this group by is followed by map join"),
@@ -2027,6 +2027,8 @@ public class HiveConf extends Configuration {
         "However, if it is on, and the predicted number of entries in hashtable for a given join \n" +
         "input is larger than this number, the join will not be converted to a mapjoin. \n" +
         "The value \"-1\" means no limit."),
+    XPRODSMALLTABLEROWSTHRESHOLD("hive.xprod.mapjoin.small.table.rows", 1,"Maximum number of rows on build side"
+        + " of map join before it switches over to cross product edge"),
     HIVECONVERTJOINMAXSHUFFLESIZE("hive.auto.convert.join.shuffle.max.size", 10000000000L,
        "If hive.auto.convert.join.noconditionaltask is off, this parameter does not take affect. \n" +
        "However, if it is on, and the predicted size of the larger input for a given join is greater \n" +
@@ -2138,7 +2140,7 @@ public class HiveConf extends Configuration {
         "is also left in the operator tree at the original place."),
     HIVEPOINTLOOKUPOPTIMIZER("hive.optimize.point.lookup", true,
          "Whether to transform OR clauses in Filter operators into IN clauses"),
-    HIVEPOINTLOOKUPOPTIMIZERMIN("hive.optimize.point.lookup.min", 31,
+    HIVEPOINTLOOKUPOPTIMIZERMIN("hive.optimize.point.lookup.min", 2,
              "Minimum number of OR clauses needed to transform into IN clauses"),
     HIVECOUNTDISTINCTOPTIMIZER("hive.optimize.countdistinct", true,
                  "Whether to transform count distinct into two stages"),
@@ -2245,7 +2247,7 @@ public class HiveConf extends Configuration {
     HIVE_COMBINE_EQUIVALENT_WORK_OPTIMIZATION("hive.combine.equivalent.work.optimization", true, "Whether to " +
             "combine equivalent work objects during physical optimization.\n This optimization looks for equivalent " +
             "work objects and combines them if they meet certain preconditions. Spark only."),
-    HIVE_REMOVE_SQ_COUNT_CHECK("hive.optimize.remove.sq_count_check", false,
+    HIVE_REMOVE_SQ_COUNT_CHECK("hive.optimize.remove.sq_count_check", true,
         "Whether to remove an extra join with sq_count_check for scalar subqueries "
             + "with constant group by keys."),
 
@@ -3016,6 +3018,8 @@ public class HiveConf extends Configuration {
     HIVE_SSL_PROTOCOL_BLACKLIST("hive.ssl.protocol.blacklist", "SSLv2,SSLv3",
         "SSL Versions to disable for all Hive Servers"),
 
+    HIVE_PRIVILEGE_SYNCHRONIZER("hive.privilege.synchronizer", true,
+            "Whether to synchronize privileges from external authorizer periodically in HS2"),
     HIVE_PRIVILEGE_SYNCHRONIZER_INTERVAL("hive.privilege.synchronizer.interval",
         "1800s", new TimeValidator(TimeUnit.SECONDS),
         "Interval to synchronize privileges from external authorizer periodically in HS2"),
@@ -3660,7 +3664,11 @@ public class HiveConf extends Configuration {
         "internal use only. When false, don't suppress fatal exceptions like\n" +
         "NullPointerException, etc so the query will fail and assure it will be noticed",
         true),
-
+    HIVE_VECTORIZATION_FILESINK_ARROW_NATIVE_ENABLED(
+        "hive.vectorized.execution.filesink.arrow.native.enabled", false,
+        "This flag should be set to true to enable the native vectorization\n" +
+        "of queries using the Arrow SerDe and FileSink.\n" +
+        "The default value is false."),
     HIVE_TYPE_CHECK_ON_INSERT("hive.typecheck.on.insert", true, "This property has been extended to control "
         + "whether to check, convert, and normalize partition value to conform to its column type in "
         + "partition operations including but not limited to insert, such as alter, describe etc."),
