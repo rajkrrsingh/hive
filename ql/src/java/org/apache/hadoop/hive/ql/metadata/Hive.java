@@ -29,6 +29,7 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import static org.apache.hadoop.hive.conf.Constants.MATERIALIZED_VIEW_REWRITING_TIME_WINDOW;
 import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_STORAGE;
 import static org.apache.hadoop.hive.metastore.utils.MetaStoreUtils.getDefaultCatalog;
+import static org.apache.hadoop.hive.ql.io.AcidUtils.getFullTableName;
 import static org.apache.hadoop.hive.ql.parse.DDLSemanticAnalyzer.makeBinaryPredicate;
 import static org.apache.hadoop.hive.serde.serdeConstants.SERIALIZATION_FORMAT;
 import static org.apache.hadoop.hive.serde.serdeConstants.STRING_TYPE_NAME;
@@ -620,7 +621,12 @@ public class Hive {
   }
 
   public void alterTable(String catName, String dbName, String tblName, Table newTbl, boolean cascade,
-      EnvironmentContext environmentContext, boolean transactional)
+                         EnvironmentContext environmentContext, boolean transactional) throws HiveException {
+    alterTable(catName, dbName, tblName, newTbl, cascade, environmentContext, transactional, 0);
+  }
+
+  public void alterTable(String catName, String dbName, String tblName, Table newTbl, boolean cascade,
+      EnvironmentContext environmentContext, boolean transactional, long replWriteId)
       throws HiveException {
 
     if (catName == null) {
@@ -642,8 +648,13 @@ public class Hive {
       // Take a table snapshot and set it to newTbl.
       AcidUtils.TableSnapshot tableSnapshot = null;
       if (transactional) {
-        // Make sure we pass in the names, so we can get the correct snapshot for rename table.
-        tableSnapshot = AcidUtils.getTableSnapshot(conf, newTbl, dbName, tblName, true);
+        if (replWriteId > 0) {
+          ValidWriteIdList writeIds = getMSC().getValidWriteIds(getFullTableName(dbName, tblName), replWriteId);
+          tableSnapshot = new TableSnapshot(replWriteId, writeIds.writeToString());
+        } else {
+          // Make sure we pass in the names, so we can get the correct snapshot for rename table.
+          tableSnapshot = AcidUtils.getTableSnapshot(conf, newTbl, dbName, tblName, true);
+        }
         if (tableSnapshot != null) {
           newTbl.getTTable().setWriteId(tableSnapshot.getWriteId());
         } else {
@@ -682,11 +693,12 @@ public class Hive {
    *           if the changes in metadata is not acceptable
    * @throws TException
    */
+  @Deprecated
   public void alterPartition(String tblName, Partition newPart,
       EnvironmentContext environmentContext, boolean transactional)
       throws InvalidOperationException, HiveException {
     String[] names = Utilities.getDbTableName(tblName);
-    alterPartition(names[0], names[1], newPart, environmentContext, transactional);
+    alterPartition(null, names[0], names[1], newPart, environmentContext, transactional);
   }
 
   /**
@@ -706,10 +718,13 @@ public class Hive {
    *           if the changes in metadata is not acceptable
    * @throws TException
    */
-  public void alterPartition(String dbName, String tblName, Partition newPart,
+  public void alterPartition(String catName, String dbName, String tblName, Partition newPart,
                              EnvironmentContext environmentContext, boolean transactional)
       throws InvalidOperationException, HiveException {
     try {
+      if (catName == null) {
+        catName = getDefaultCatalog(conf);
+      }
       validatePartition(newPart);
       String location = newPart.getLocation();
       if (location != null) {
@@ -728,7 +743,7 @@ public class Hive {
           LOG.warn("Cannot get a table snapshot for " + tblName);
         }
       }
-      getSynchronizedMSC().alter_partition(
+      getSynchronizedMSC().alter_partition(catName,
           dbName, tblName, newPart.getTPartition(), environmentContext,
           tableSnapshot == null ? null : tableSnapshot.getValidWriteIdList());
 
@@ -849,6 +864,7 @@ public class Hive {
     }
   }
 
+  // TODO: this whole path won't work with catalogs
   public void alterDatabase(String dbName, Database db)
       throws HiveException {
     try {
@@ -871,6 +887,8 @@ public class Hive {
   public void createTable(Table tbl) throws HiveException {
     createTable(tbl, false);
   }
+
+  // TODO: from here down dozens of methods do not support catalog. I got tired marking them.
 
   /**
    * Creates the table with the given objects. It takes additional arguments for
@@ -1068,15 +1086,21 @@ public class Hive {
    *          name of the table
    * @throws HiveException
    */
-  public void truncateTable(String dbDotTableName, Map<String, String> partSpec) throws HiveException {
+  public void truncateTable(String dbDotTableName, Map<String, String> partSpec, Long writeId) throws HiveException {
     try {
       Table table = getTable(dbDotTableName, true);
-      // TODO: we should refactor code to make sure snapshot is always obtained in the same layer e.g. Hive.java
       AcidUtils.TableSnapshot snapshot = null;
       if (AcidUtils.isTransactionalTable(table)) {
-        snapshot = AcidUtils.getTableSnapshot(conf, table, true);
+        if (writeId <= 0) {
+          snapshot = AcidUtils.getTableSnapshot(conf, table, true);
+        } else {
+          String fullTableName = getFullTableName(table.getDbName(), table.getTableName());
+          ValidWriteIdList writeIdList = getMSC().getValidWriteIds(fullTableName, writeId);
+          snapshot = new TableSnapshot(writeId, writeIdList.writeToString());
+        }
       }
 
+      // TODO: APIs with catalog names
       List<String> partNames = ((null == partSpec)
         ? null : getPartitionNames(table.getDbName(), table.getTableName(), partSpec, (short) -1));
       if (snapshot == null) {
@@ -1130,6 +1154,7 @@ public class Hive {
    *              if there's an internal error or if the table doesn't exist
    */
   public Table getTable(final String dbName, final String tableName) throws HiveException {
+     // TODO: catalog... etc everywhere
     if (tableName.contains(".")) {
       String[] names = Utilities.getDbTableName(tableName);
       return this.getTable(names[0], names[1], true);
@@ -2117,7 +2142,7 @@ public class Hive {
       ec.putToProperties(StatsSetupConst.DO_NOT_UPDATE_STATS, StatsSetupConst.TRUE);
     }
     LOG.debug("Altering existing partition " + newTPart.getSpec());
-    getSynchronizedMSC().alter_partition(
+    getSynchronizedMSC().alter_partition(tbl.getCatName(),
         tbl.getDbName(), tbl.getTableName(), newTPart.getTPartition(), new EnvironmentContext(),
         tableSnapshot == null ? null : tableSnapshot.getValidWriteIdList());
   }
@@ -2591,6 +2616,7 @@ private void constructOneLBLocationMap(FileStatus fSta,
   }
 
   public List<Partition> createPartitions(AddPartitionDesc addPartitionDesc) throws HiveException {
+    // TODO: catalog name everywhere in this method
     Table tbl = getTable(addPartitionDesc.getDbName(), addPartitionDesc.getTableName());
     int size = addPartitionDesc.getPartitionCount();
     List<org.apache.hadoop.hive.metastore.api.Partition> in =
@@ -2799,7 +2825,8 @@ private void constructOneLBLocationMap(FileStatus fSta,
     if (!org.apache.commons.lang.StringUtils.isEmpty(tbl.getDbName())) {
       fullName = tbl.getFullyQualifiedName();
     }
-    alterPartition(fullName, new Partition(tbl, tpart), null, true);
+    alterPartition(tbl.getCatalogName(), tbl.getDbName(), tbl.getTableName(),
+        new Partition(tbl, tpart), null, true);
   }
 
   private void alterPartitionSpecInMemory(Table tbl,
@@ -3747,10 +3774,13 @@ private void constructOneLBLocationMap(FileStatus fSta,
     } else if (isSrcLocal) {
       destFs.copyFromLocalFile(sourcePath, destFilePath);
     } else {
-      FileUtils.copy(sourceFs, sourcePath, destFs, destFilePath,
+      if (!FileUtils.copy(sourceFs, sourcePath, destFs, destFilePath,
           true,   // delete source
           false,  // overwrite destination
-          conf);
+          conf)) {
+        LOG.error("Copy failed for source: " + sourcePath + " to destination: " + destFilePath);
+        throw new IOException("File copy failed.");
+      }
     }
     return destFilePath;
   }
@@ -5331,10 +5361,14 @@ private void constructOneLBLocationMap(FileStatus fSta,
   }
 
 
-  public void createResourcePlan(WMResourcePlan resourcePlan, String copyFromName)
+  public void createResourcePlan(WMResourcePlan resourcePlan, String copyFromName, boolean ifNotExists)
       throws HiveException {
     try {
       getMSC().createResourcePlan(resourcePlan, copyFromName);
+    } catch (AlreadyExistsException e) {
+      if (!ifNotExists) {
+        throw new HiveException(e, ErrorMsg.RESOURCE_PLAN_ALREADY_EXISTS, resourcePlan.getName());
+      }
     } catch (Exception e) {
       throw new HiveException(e);
     }
@@ -5358,9 +5392,13 @@ private void constructOneLBLocationMap(FileStatus fSta,
     }
   }
 
-  public void dropResourcePlan(String rpName) throws HiveException {
+  public void dropResourcePlan(String rpName, boolean ifExists) throws HiveException {
     try {
       getMSC().dropResourcePlan(rpName);
+    } catch (NoSuchObjectException e) {
+      if (!ifExists) {
+        throw new HiveException(e, ErrorMsg.RESOURCE_PLAN_NOT_EXISTS, rpName);
+      }
     } catch (Exception e) {
       throw new HiveException(e);
     }

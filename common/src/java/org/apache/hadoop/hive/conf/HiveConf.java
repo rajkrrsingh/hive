@@ -421,6 +421,7 @@ public class HiveConf extends Configuration {
    * 1) Hadoop configuration properties are applied.
    * 2) ConfVar properties with non-null values are overlayed.
    * 3) hive-site.xml properties are overlayed.
+   * 4) System Properties and Manual Overrides are overlayed.
    *
    * WARNING: think twice before adding any Hadoop configuration properties
    * with non-null values to this list as they will override any values defined
@@ -2477,7 +2478,7 @@ public class HiveConf extends Configuration {
         "allows two concurrent writes to the same partition but still lets lock manager prevent\n" +
         "DROP TABLE etc. when the table is being written to"),
     TXN_OVERWRITE_X_LOCK("hive.txn.xlock.iow", true,
-        "Ensures commands with OVERWRITE (such as INSERT OVERWRITE) acquire Exclusive locks for\b" +
+        "Ensures commands with OVERWRITE (such as INSERT OVERWRITE) acquire Exclusive locks for\n" +
             "transactional tables.  This ensures that inserts (w/o overwrite) running concurrently\n" +
             "are not hidden by the INSERT OVERWRITE."),
     HIVE_TXN_STATS_ENABLED("hive.txn.stats.enabled", true,
@@ -4310,6 +4311,12 @@ public class HiveConf extends Configuration {
         "specified (default) then the spark-submit shell script is used to launch the Spark " +
         "app. If " + HIVE_SPARK_LAUNCHER_CLIENT + " is specified then Spark's " +
         "InProcessLauncher is used to programmatically launch the app."),
+    SPARK_SESSION_TIMEOUT("hive.spark.session.timeout", "30m", new TimeValidator(TimeUnit.MINUTES,
+            30L, true, null, true), "Amount of time the Spark Remote Driver should wait for " +
+            " a Spark job to be submitted before shutting down. Minimum value is 30 minutes"),
+    SPARK_SESSION_TIMEOUT_PERIOD("hive.spark.session.timeout.period", "60s",
+            new TimeValidator(TimeUnit.SECONDS, 60L, true, null, true),
+            "How frequently to check for idle Spark sessions. Minimum value is 60 seconds."),
     NWAYJOINREORDER("hive.reorder.nway.joins", true,
       "Runs reordering of tables within single n-way join (i.e.: picks streamtable)"),
     HIVE_MERGE_NWAY_JOINS("hive.merge.nway.joins", true,
@@ -5242,7 +5249,7 @@ public class HiveConf extends Configuration {
       addResource(hiveServer2SiteUrl);
     }
 
-    // Overlay the values of any system properties whose names appear in the list of ConfVars
+    // Overlay the values of any system properties and manual overrides
     applySystemProperties();
 
     if ((this.get("hive.metastore.ds.retry.attempts") != null) ||
@@ -5509,7 +5516,9 @@ public class HiveConf extends Configuration {
 
   };
 
-
+  //Take care of conf overrides.
+  //Includes values in ConfVars as well as underlying configuration properties (ie, hadoop)
+  public static final Map<String, String> overrides = new HashMap<String, String>();
 
   /**
    * Apply system properties to this object if the property name is defined in ConfVars
@@ -5537,6 +5546,13 @@ public class HiveConf extends Configuration {
       }
     }
 
+    for (Map.Entry<String, String> oneVar : overrides.entrySet()) {
+      if (overrides.get(oneVar.getKey()) != null) {
+        if (overrides.get(oneVar.getKey()).length() > 0) {
+          systemProperties.put(oneVar.getKey(), oneVar.getValue());
+        }
+      }
+    }
     return systemProperties;
   }
 
