@@ -25,6 +25,7 @@ import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
+import org.apache.hadoop.hive.common.repl.ReplConst;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.InjectableBehaviourObjectStore;
 import org.apache.hadoop.hive.metastore.InjectableBehaviourObjectStore.BehaviourInjection;
@@ -35,6 +36,7 @@ import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.conf.MetastoreConf;
 import org.apache.hadoop.hive.metastore.messaging.json.gzip.GzipJSONMessageEncoder;
+import org.apache.hadoop.hive.metastore.utils.MetaStoreUtils;
 import org.apache.hadoop.hive.ql.ErrorMsg;
 import org.apache.hadoop.hive.ql.parse.WarehouseInstance.Tuple;
 import org.apache.hadoop.hive.ql.exec.repl.incremental.IncrementalLoadTasksBuilder;
@@ -1085,7 +1087,7 @@ public class TestReplicationScenariosAcrossInstances extends BaseReplicationAcro
 
     // Bootstrap Repl B -> C
     WarehouseInstance.Tuple tupleReplica = replica.run("alter database " + replicatedDbName
-            + " set dbproperties ('" + ReplUtils.TARGET_OF_REPLICATION + "' = '')").dump(replicatedDbName);
+            + " set dbproperties ('" + ReplConst.TARGET_OF_REPLICATION + "' = '')").dump(replicatedDbName);
     String replDbFromReplica = replicatedDbName + "_dupe";
     replica.load(replDbFromReplica, replicatedDbName)
             .run("use " + replDbFromReplica)
@@ -1120,7 +1122,7 @@ public class TestReplicationScenariosAcrossInstances extends BaseReplicationAcro
             .run("repl status " + replicatedDbName)
             .verifyResult(tuplePrimaryInc.lastReplicationId)
             .run("alter database " + replicatedDbName
-                    + " set dbproperties ('" + ReplUtils.TARGET_OF_REPLICATION + "' = '')")
+                    + " set dbproperties ('" + ReplConst.TARGET_OF_REPLICATION + "' = '')")
             .dump(replicatedDbName, Collections.emptyList());
 
     // Check if DB in B have ckpt property is set to bootstrap dump location used in B and missing for table/partition.
@@ -1166,12 +1168,12 @@ public class TestReplicationScenariosAcrossInstances extends BaseReplicationAcro
     //Perform empty dump and load
     primary.dump(primaryDbName);
     replica.load(replicatedDbName, primaryDbName);
-    assertTrue(ReplUtils.isTargetOfReplication(replica.getDatabase(replicatedDbName)));
+    assertTrue(MetaStoreUtils.isTargetOfReplication(replica.getDatabase(replicatedDbName)));
 
     replica.dumpFailure(replicatedDbName);  //can not dump db which is target of replication
 
     replica.run("ALTER DATABASE " + replicatedDbName + " Set DBPROPERTIES('repl.target.for' = '')");
-    assertFalse(ReplUtils.isTargetOfReplication(replica.getDatabase(replicatedDbName)));
+    assertFalse(MetaStoreUtils.isTargetOfReplication(replica.getDatabase(replicatedDbName)));
     replica.dump(replicatedDbName);
 
     // do a empty incremental load to allow dump of replicatedDbName
@@ -1180,7 +1182,7 @@ public class TestReplicationScenariosAcrossInstances extends BaseReplicationAcro
     replica.load(replicatedDbName, primaryDbName);
     compareDbProperties(primary.getDatabase(primaryDbName).getParameters(),
             replica.getDatabase(replicatedDbName).getParameters());
-    assertTrue(ReplUtils.isTargetOfReplication(replica.getDatabase(replicatedDbName)));
+    assertTrue(MetaStoreUtils.isTargetOfReplication(replica.getDatabase(replicatedDbName)));
 
     replica.dumpFailure(replicatedDbName);    //Cannot dump database which is target of replication.
   }

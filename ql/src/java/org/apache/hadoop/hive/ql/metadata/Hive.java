@@ -101,6 +101,7 @@ import org.apache.hadoop.hive.conf.Constants;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.metastore.api.GetPartitionsByNamesRequest;
+import org.apache.hadoop.hive.metastore.api.GetTableRequest;
 import org.apache.hadoop.hive.ql.io.HdfsUtils;
 import org.apache.hadoop.hive.metastore.HiveMetaException;
 import org.apache.hadoop.hive.metastore.HiveMetaHook;
@@ -387,6 +388,13 @@ public class Hive {
    */
   public static Hive getWithFastCheck(HiveConf c, boolean doRegisterAllFns) throws HiveException {
     return getInternal(c, false, true, doRegisterAllFns);
+  }
+
+  /**
+   * Same as {@link #get(HiveConf)}, except that it does not register all functions.
+   */
+  public static Hive getWithoutRegisterFns(HiveConf c) throws HiveException {
+    return getInternal(c, false, false, false);
   }
 
   private static Hive getInternal(HiveConf c, boolean needsRefresh, boolean isFastCheck,
@@ -1526,19 +1534,20 @@ public class Hive {
     org.apache.hadoop.hive.metastore.api.Table tTable = null;
     try {
       // Note: this is currently called w/true from StatsOptimizer only.
+      GetTableRequest request = new GetTableRequest(dbName, tableName);
+      request.setCatName(getDefaultCatalog(conf));
+      request.setGetColumnStats(getColumnStats);
+      request.setEngine(Constants.HIVE_ENGINE);
       if (checkTransactional) {
         ValidWriteIdList validWriteIdList = null;
-        long txnId = SessionState.get().getTxnMgr() != null ?
-            SessionState.get().getTxnMgr().getCurrentTxnId() : 0;
+        long txnId = SessionState.get() != null && SessionState.get().getTxnMgr() != null ?
+             SessionState.get().getTxnMgr().getCurrentTxnId() : 0;
         if (txnId > 0) {
-          validWriteIdList = AcidUtils.getTableValidWriteIdListWithTxnList(conf,
-              dbName, tableName);
+          validWriteIdList = AcidUtils.getTableValidWriteIdListWithTxnList(conf, dbName, tableName);
         }
-        tTable = getMSC().getTable(getDefaultCatalog(conf), dbName, tableName,
-            validWriteIdList != null ? validWriteIdList.toString() : null, getColumnStats, Constants.HIVE_ENGINE);
-      } else {
-        tTable = getMSC().getTable(dbName, tableName, getColumnStats, Constants.HIVE_ENGINE);
+        request.setValidWriteIdList(validWriteIdList != null ? validWriteIdList.toString() : null);
       }
+      tTable = getMSC().getTable(request);
     } catch (NoSuchObjectException e) {
       if (throwException) {
         throw new InvalidTableException(tableName);
@@ -1923,7 +1932,7 @@ public class Hive {
               Materialization invalidationInfo = getMSC().getMaterializationInvalidationInfo(
                   materializedViewTable.getCreationMetadata(), conf.get(ValidTxnList.VALID_TXNS_KEY));
               if (invalidationInfo == null || invalidationInfo.isSourceTablesUpdateDeleteModified() ||
-                  invalidationInfo.isSetSourceTablesCompacted()) {
+                  invalidationInfo.isSourceTablesCompacted()) {
                 // We ignore (as it did not meet the requirements), but we do not need to update it in the
                 // registry, since it is up-to-date
                 result = false;
@@ -2518,7 +2527,7 @@ public class Hive {
           // base_x.  (there is Insert Overwrite and Load Data Overwrite)
           boolean isSkipTrash = MetaStoreUtils.isSkipTrash(tbl.getParameters());
           boolean needRecycle = !tbl.isTemporary()
-                  && ReplChangeManager.shouldEnableCm(Hive.get().getDatabase(tbl.getDbName()), tbl.getTTable());
+		   && ReplChangeManager.shouldEnableCm(Hive.get().getDatabase(tbl.getDbName()), tbl.getTTable());
           replaceFiles(tbl.getPath(), loadPath, destPath, oldPartPath, getConf(), isSrcLocal,
               isSkipTrash, newFiles, FileUtils.HIDDEN_FILES_PATH_FILTER, needRecycle, isManaged, isInsertOverwrite);
         } else {
@@ -2945,21 +2954,46 @@ private void constructOneLBLocationMap(FileStatus fSta,
     final SessionState parentSession = SessionState.get();
     List<Callable<Partition>> tasks = Lists.newLinkedList();
 
-    // fetch all the partitions matching the part spec using the partition iterable
-    // this way the maximum batch size configuration parameter is considered
-    PartitionIterable partitionIterable = new PartitionIterable(Hive.get(), tbl, partSpec,
-              conf.getInt(MetastoreConf.ConfVars.BATCH_RETRIEVE_MAX.getVarname(), 300));
-    Iterator<Partition> iterator = partitionIterable.iterator();
+    final boolean scanPartitionsByName = conf.getBoolean(
+        ConfVars.HIVE_LOAD_DYNAMIC_PARTITIONS_SCAN_SPECIFIC_PARTITIONS.varname, false);
 
-    // Match valid partition path to partitions
-    while (iterator.hasNext()) {
-      Partition partition = iterator.next();
-      partitionDetailsMap.entrySet().stream()
-              .filter(entry -> entry.getValue().fullSpec.equals(partition.getSpec()))
-              .findAny().ifPresent(entry -> {
-                entry.getValue().partition = partition;
-                entry.getValue().hasOldPartition = true;
-              });
+    if (scanPartitionsByName && !tbd.isDirectInsert() && !AcidUtils.isTransactionalTable(tbl)) {
+      //TODO: Need to create separate ticket for ACID table; ACID table can be a bigger change.
+      //Fetch only relevant partitions from HMS for checking old partitions
+      List<String> partitionNames = new LinkedList<>();
+      for(PartitionDetails details : partitionDetailsMap.values()) {
+        if (details.fullSpec != null && !details.fullSpec.isEmpty()) {
+          partitionNames.add(Warehouse.makeDynamicPartNameNoTrailingSeperator(details.fullSpec));
+        }
+      }
+      List<Partition> partitions = Hive.get().getPartitionsByNames(tbl, partitionNames);
+      for(Partition partition : partitions) {
+        LOG.info("HMS partition spec: {}", partition.getSpec());
+        partitionDetailsMap.entrySet().parallelStream()
+            .filter(entry -> entry.getValue().fullSpec.equals(partition.getSpec()))
+            .findAny().ifPresent(entry -> {
+          entry.getValue().partition = partition;
+          entry.getValue().hasOldPartition = true;
+        });
+      }
+    } else {
+
+      // fetch all the partitions matching the part spec using the partition iterable
+      // this way the maximum batch size configuration parameter is considered
+      PartitionIterable partitionIterable = new PartitionIterable(Hive.get(), tbl, partSpec,
+          conf.getInt(MetastoreConf.ConfVars.BATCH_RETRIEVE_MAX.getVarname(), 300));
+      Iterator<Partition> iterator = partitionIterable.iterator();
+
+      // Match valid partition path to partitions
+      while (iterator.hasNext()) {
+        Partition partition = iterator.next();
+        partitionDetailsMap.entrySet().parallelStream()
+            .filter(entry -> entry.getValue().fullSpec.equals(partition.getSpec()))
+            .findAny().ifPresent(entry -> {
+          entry.getValue().partition = partition;
+          entry.getValue().hasOldPartition = true;
+        });
+      }
     }
 
     boolean isTxnTable = AcidUtils.isTransactionalTable(tbl);
@@ -3034,7 +3068,7 @@ private void constructOneLBLocationMap(FileStatus fSta,
     Map<Map<String, String>, Partition> result = Maps.newLinkedHashMap();
     try {
       futures = executor.invokeAll(tasks);
-      LOG.debug("Number of partitionsToAdd to be added is " + futures.size());
+      LOG.info("Number of partitionsToAdd to be added is " + futures.size());
       for (Future<Partition> future : futures) {
         Partition partition = future.get();
         result.put(partition.getSpec(), partition);
@@ -3201,7 +3235,7 @@ private void constructOneLBLocationMap(FileStatus fSta,
         //for fullAcid we don't want to delete any files even for OVERWRITE see HIVE-14988/HIVE-17361
         boolean isSkipTrash = MetaStoreUtils.isSkipTrash(tbl.getParameters());
         boolean needRecycle = !tbl.isTemporary()
-                && ReplChangeManager.shouldEnableCm(Hive.get().getDatabase(tbl.getDbName()), tbl.getTTable());
+                && ReplChangeManager.shouldEnableCm(getDatabase(tbl.getDbName()), tbl.getTTable());
         replaceFiles(tblPath, loadPath, destPath, tblPath, conf, isSrcLocal, isSkipTrash,
             newFiles, FileUtils.HIDDEN_FILES_PATH_FILTER, needRecycle, isManaged, isInsertOverwrite);
       } else {

@@ -18,9 +18,12 @@
 
 package org.apache.hadoop.hive.ql.exec.tez;
 
+import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.hive.ql.session.SessionStateUtil;
 import org.apache.hive.common.util.Ref;
 import org.apache.hadoop.hive.ql.exec.tez.UserPoolMapping.MappingInput;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -30,6 +33,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import javax.annotation.Nullable;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
@@ -58,6 +62,7 @@ import org.apache.hadoop.hive.ql.plan.TezWork;
 import org.apache.hadoop.hive.ql.plan.UnionWork;
 import org.apache.hadoop.hive.ql.plan.api.StageType;
 import org.apache.hadoop.hive.ql.session.SessionState;
+import org.apache.hadoop.hive.ql.txn.compactor.metrics.DeltaFilesMetricReporter;
 import org.apache.hadoop.hive.ql.wm.WmContext;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -99,6 +104,9 @@ import com.google.common.annotations.VisibleForTesting;
 public class TezTask extends Task<TezWork> {
 
   private static final String CLASS_NAME = TezTask.class.getName();
+  private static final String JOB_ID_TEMPLATE = "job_%s%d_%s";
+  private static final String ICEBERG_SERIALIZED_TABLE_PREFIX = "iceberg.mr.serialized.table.";
+  private static final String ICEBERG_TABLE_LOCATION = "iceberg.mr.table.location";
   private static transient Logger LOG = LoggerFactory.getLogger(CLASS_NAME);
   private final PerfLogger perfLogger = SessionState.getPerfLogger();
   private static final String TEZ_MEMORY_RESERVE_FRACTION = "tez.task.scale.memory.reserve-fraction";
@@ -250,10 +258,14 @@ public class TezTask extends Task<TezWork> {
           this.setException(new HiveException(monitor.getDiagnostics()));
         }
 
-        // fetch the counters
         try {
+          // fetch the counters
           Set<StatusGetOpts> statusGetOpts = EnumSet.of(StatusGetOpts.GET_COUNTERS);
           TezCounters dagCounters = dagClient.getDAGStatus(statusGetOpts).getDAGCounters();
+
+          if (HiveConf.getBoolVar(conf, HiveConf.ConfVars.HIVE_SERVER2_METRICS_ENABLED)) {
+            DeltaFilesMetricReporter.getInstance().submit(dagCounters);
+          }
           // if initial counters exists, merge it with dag counters to get aggregated view
           TezCounters mergedCounters = counters == null ? dagCounters : Utils.mergeTezCounters(dagCounters, counters);
           counters = mergedCounters;
@@ -261,6 +273,11 @@ public class TezTask extends Task<TezWork> {
           // Don't fail execution due to counters - just don't print summary info
           LOG.warn("Failed to get counters. Ignoring, summary info will be incomplete.", err);
           counters = null;
+        }
+
+        // save useful commit information into session conf, e.g. for custom commit hooks, like Iceberg
+        if (rc == 0) {
+          collectCommitInformation(work);
         }
       } finally {
         // Note: due to TEZ-3846, the session may actually be invalid in case of some errors.
@@ -336,6 +353,55 @@ public class TezTask extends Task<TezWork> {
       }
     }
     return rc;
+  }
+
+  private void collectCommitInformation(TezWork work) throws IOException, TezException {
+    for (BaseWork w : work.getAllWork()) {
+      JobConf jobConf = workToConf.get(w);
+      Vertex vertex = workToVertex.get(w);
+      String jobIdPrefix = dagClient.getDagIdentifierString().split("_")[1];
+      boolean hasIcebergCommitter = Optional.ofNullable(jobConf).map(JobConf::getOutputCommitter)
+          .map(Object::getClass).map(Class::getName)
+          .filter(name -> name.endsWith("HiveIcebergNoJobCommitter")).isPresent();
+      // we should only consider jobs with Iceberg output committer and a data sink
+      if (hasIcebergCommitter && !vertex.getDataSinks().isEmpty()) {
+        String tableLocationRoot = jobConf.get(ICEBERG_TABLE_LOCATION);
+        if (tableLocationRoot != null) {
+          VertexStatus status = dagClient.getVertexStatus(vertex.getName(), EnumSet.of(StatusGetOpts.GET_COUNTERS));
+          Path path = new Path(tableLocationRoot + "/temp");
+          LOG.debug("Table temp directory path is: " + path);
+          // list the directories inside the temp directory
+          // TODO: this is temporary, refactor when new Tez version has been released
+          FileStatus[] children = path.getFileSystem(jobConf).listStatus(path);
+          LOG.debug("Listing the table temp directory yielded these files: " + Arrays.toString(children));
+          for (FileStatus child : children) {
+            // pick only directories that contain the correct jobID prefix
+            if (child.isDirectory() && child.getPath().getName().contains(jobIdPrefix)) {
+              // folder name pattern is queryID-jobID, we're removing the queryID part to get the jobID
+              String jobIdStr = child.getPath().getName().substring(jobConf.get("hive.query.id").length() + 1);
+
+              List<String> tables = new ArrayList<>();
+              Map<String, String> icebergProperties = new HashMap<>();
+              for (Map.Entry<String, String> entry : jobConf) {
+                if (entry.getKey().startsWith(ICEBERG_SERIALIZED_TABLE_PREFIX)) {
+                  // get all target tables this vertex wrote to
+                  tables.add(entry.getKey().substring(ICEBERG_SERIALIZED_TABLE_PREFIX.length()));
+                } else if (entry.getKey().startsWith("iceberg.mr.")) {
+                  // find iceberg props in jobConf as they can be needed, but not available, during job commit
+                  icebergProperties.put(entry.getKey(), entry.getValue());
+                }
+              }
+
+              // save information for each target table
+              tables.forEach(table -> SessionStateUtil.addCommitInfo(jobConf, table, jobIdStr,
+                  status.getProgress().getSucceededTaskCount(), icebergProperties));
+            }
+          }
+        } else {
+          LOG.warn("Table location not found in config for base work: " + w.getName());
+        }
+      }
+    }
   }
 
   private void updateNumRows() {

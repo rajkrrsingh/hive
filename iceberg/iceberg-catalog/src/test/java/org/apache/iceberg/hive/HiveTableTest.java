@@ -26,14 +26,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
-import org.apache.avro.generic.GenericData;
-import org.apache.avro.generic.GenericRecordBuilder;
 import org.apache.hadoop.hive.metastore.TableType;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.SerDeInfo;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.hive_metastoreConstants;
 import org.apache.hadoop.hive.serde.serdeConstants;
+import org.apache.hive.iceberg.org.apache.avro.generic.GenericData;
+import org.apache.hive.iceberg.org.apache.avro.generic.GenericRecordBuilder;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataFiles;
 import org.apache.iceberg.Files;
@@ -375,7 +375,7 @@ public class HiveTableTest extends HiveTableBaseTest {
     catalog.dropTable(TABLE_IDENTIFIER);
 
     // Unset in hive-conf
-    hiveConf.unset(ConfigProperties.ENGINE_HIVE_ENABLED);
+    catalog.getConf().unset(ConfigProperties.ENGINE_HIVE_ENABLED);
 
     catalog.createTable(TABLE_IDENTIFIER, schema, PartitionSpec.unpartitioned());
     org.apache.hadoop.hive.metastore.api.Table hmsTable = metastoreClient.getTable(DB_NAME, TABLE_NAME);
@@ -389,7 +389,7 @@ public class HiveTableTest extends HiveTableBaseTest {
     catalog.dropTable(TABLE_IDENTIFIER);
 
     // Enable by hive-conf
-    hiveConf.set(ConfigProperties.ENGINE_HIVE_ENABLED, "true");
+    catalog.getConf().set(ConfigProperties.ENGINE_HIVE_ENABLED, "true");
 
     catalog.createTable(TABLE_IDENTIFIER, schema, PartitionSpec.unpartitioned());
     org.apache.hadoop.hive.metastore.api.Table hmsTable = metastoreClient.getTable(DB_NAME, TABLE_NAME);
@@ -399,7 +399,7 @@ public class HiveTableTest extends HiveTableBaseTest {
     catalog.dropTable(TABLE_IDENTIFIER);
 
     // Disable by hive-conf
-    hiveConf.set(ConfigProperties.ENGINE_HIVE_ENABLED, "false");
+    catalog.getConf().set(ConfigProperties.ENGINE_HIVE_ENABLED, "false");
 
     catalog.createTable(TABLE_IDENTIFIER, schema, PartitionSpec.unpartitioned());
     hmsTable = metastoreClient.getTable(DB_NAME, TABLE_NAME);
@@ -415,7 +415,7 @@ public class HiveTableTest extends HiveTableBaseTest {
     // Enabled by table property - also check that the hive-conf is ignored
     Map<String, String> tableProperties = new HashMap<>();
     tableProperties.put(TableProperties.ENGINE_HIVE_ENABLED, "true");
-    hiveConf.set(ConfigProperties.ENGINE_HIVE_ENABLED, "false");
+    catalog.getConf().set(ConfigProperties.ENGINE_HIVE_ENABLED, "false");
 
     catalog.createTable(TABLE_IDENTIFIER, schema, PartitionSpec.unpartitioned(), tableProperties);
     org.apache.hadoop.hive.metastore.api.Table hmsTable = metastoreClient.getTable(DB_NAME, TABLE_NAME);
@@ -426,7 +426,7 @@ public class HiveTableTest extends HiveTableBaseTest {
 
     // Disabled by table property - also check that the hive-conf is ignored
     tableProperties.put(TableProperties.ENGINE_HIVE_ENABLED, "false");
-    hiveConf.set(ConfigProperties.ENGINE_HIVE_ENABLED, "true");
+    catalog.getConf().set(ConfigProperties.ENGINE_HIVE_ENABLED, "true");
 
     catalog.createTable(TABLE_IDENTIFIER, schema, PartitionSpec.unpartitioned(), tableProperties);
     hmsTable = metastoreClient.getTable(DB_NAME, TABLE_NAME);

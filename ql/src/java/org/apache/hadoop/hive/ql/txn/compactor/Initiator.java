@@ -18,6 +18,7 @@
 package org.apache.hadoop.hive.ql.txn.compactor;
 
 import com.google.common.annotations.VisibleForTesting;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -40,6 +41,7 @@ import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.hive_metastoreConstants;
 import org.apache.hadoop.hive.metastore.conf.MetastoreConf;
+import org.apache.hadoop.hive.metastore.metrics.Metrics;
 import org.apache.hadoop.hive.metastore.metrics.MetricsConstants;
 import org.apache.hadoop.hive.metastore.metrics.PerfLogger;
 import org.apache.hadoop.hive.metastore.txn.CompactionInfo;
@@ -69,9 +71,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 import static org.apache.hadoop.hive.conf.Constants.COMPACTOR_INTIATOR_THREAD_NAME_FORMAT;
+import static org.apache.hadoop.hive.metastore.utils.MetaStoreUtils.isNoAutoCompactSet;
 
 /**
  * A class to initiate compactions.  This will run in a separate thread.
@@ -101,6 +105,8 @@ public class Initiator extends MetaStoreCompactorThread {
           .getTimeVar(conf, HiveConf.ConfVars.HIVE_COMPACTOR_ABORTEDTXN_TIME_THRESHOLD,
               TimeUnit.MILLISECONDS);
       boolean metricsEnabled = MetastoreConf.getBoolVar(conf, MetastoreConf.ConfVars.METRICS_ENABLED);
+      Pair<AtomicInteger, AtomicInteger> ratio =
+          Metrics.getOrCreateRatio(MetricsConstants.COMPACTION_FAILED_INITIATOR_RATIO);
 
       // Make sure we run through the loop once before checking to stop as this makes testing
       // much easier.  The stop value is only for testing anyway and not used when called from
@@ -115,6 +121,7 @@ public class Initiator extends MetaStoreCompactorThread {
         try {
           handle = txnHandler.getMutexAPI().acquireLock(TxnStore.MUTEX_KEY.Initiator.name());
           if (metricsEnabled) {
+            ratio.getRight().incrementAndGet();
             perfLogger.perfLogBegin(CLASS_NAME, MetricsConstants.COMPACTION_INITIATOR_CYCLE);
           }
           startedAt = System.currentTimeMillis();
@@ -171,6 +178,10 @@ public class Initiator extends MetaStoreCompactorThread {
           // Check for timed out remote workers.
           recoverFailedCompactions(true);
         } catch (Throwable t) {
+          // the lock timeout on AUX lock, should be ignored.
+          if (metricsEnabled && handle != null) {
+            ratio.getLeft().incrementAndGet();
+          }
           LOG.error("Initiator loop caught unexpected exception this time through the loop: " +
               StringUtils.stringifyException(t));
         }
@@ -236,8 +247,12 @@ public class Initiator extends MetaStoreCompactorThread {
     String fullTableName = TxnUtils.getFullTableName(t.getDbName(), t.getTableName());
     StorageDescriptor sd = resolveStorageDescriptor(t, p);
 
-    cache.putIfAbsent(fullTableName, findUserToRunAs(sd.getLocation(), t));
-    return cache.get(fullTableName);
+    String user = cache.get(fullTableName);
+    if (user == null) {
+      user = findUserToRunAs(sd.getLocation(), t);
+      cache.put(fullTableName, user);
+    }
+    return user;
   }
 
   @Override
@@ -424,18 +439,6 @@ public class Initiator extends MetaStoreCompactorThread {
     }
   }
 
-  // Because TABLE_NO_AUTO_COMPACT was originally assumed to be NO_AUTO_COMPACT and then was moved
-  // to no_auto_compact, we need to check it in both cases.
-  private boolean noAutoCompactSet(Table t) {
-    String noAutoCompact =
-        t.getParameters().get(hive_metastoreConstants.TABLE_NO_AUTO_COMPACT);
-    if (noAutoCompact == null) {
-      noAutoCompact =
-          t.getParameters().get(hive_metastoreConstants.TABLE_NO_AUTO_COMPACT.toUpperCase());
-    }
-    return noAutoCompact != null && noAutoCompact.equalsIgnoreCase("true");
-  }
-
   // Check if it's a dynamic partitioning case. If so, do not initiate compaction for streaming ingest, only for aborts.
   private static boolean isDynPartIngest(Table t, CompactionInfo ci){
     if (t.getPartitionKeys() != null && t.getPartitionKeys().size() > 0 &&
@@ -492,7 +495,7 @@ public class Initiator extends MetaStoreCompactorThread {
         return false;
       }
 
-      if (noAutoCompactSet(t)) {
+      if (isNoAutoCompactSet(t.getParameters())) {
         LOG.info("Table " + tableName(t) + " marked " + hive_metastoreConstants.TABLE_NO_AUTO_COMPACT +
             "=true so we will not compact it.");
         return false;

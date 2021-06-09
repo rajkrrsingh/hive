@@ -415,6 +415,10 @@ public class MetastoreConf {
         "hive.compactor.history.retention.succeeded", 3,
         new RangeValidator(0, 100), "Determines how many successful compaction records will be " +
         "retained in compaction history for a given table/partition."),
+    COMPACTOR_HISTORY_RETENTION_TIMEOUT("metastore.compactor.history.retention.timeout",
+            "hive.compactor.history.retention.timeout", 7, TimeUnit.DAYS,
+            "Determines how long failed and not initiated compaction records will be " +
+            "retained in compaction history if there is a more recent succeeded compaction on the table/partition."),
     COMPACTOR_INITIATOR_FAILED_THRESHOLD("metastore.compactor.initiator.failed.compacts.threshold",
         "hive.compactor.initiator.failed.compacts.threshold", 2,
         new RangeValidator(1, 20), "Number of consecutive compaction failures (per table/partition) " +
@@ -450,6 +454,10 @@ public class MetastoreConf {
         "hive.metastore.acidmetrics.check.interval", 300,
         TimeUnit.SECONDS,
         "Time in seconds between acid related metric collection runs."),
+    METASTORE_ACIDMETRICS_TABLES_WITH_ABORTED_TXNS_THRESHOLD("metastore.acidmetrics.table.aborted.txns.threshold",
+        "hive.metastore.acidmetrics.table.aborted.txns.threshold", 1500,
+        "The acid metrics system will collect the number of tables which have a large number of aborted transactions." +
+            "This parameter controls the minimum number of aborted transaction required so that a table will be counted."),
     COMPACTOR_INITIATOR_ON("metastore.compactor.initiator.on", "hive.compactor.initiator.on", false,
         "Whether to run the initiator and cleaner threads on this metastore instance or not.\n" +
             "Set this to true on one instance of the Thrift metastore service as part of turning\n" +
@@ -592,6 +600,11 @@ public class MetastoreConf {
             "not blocked.\n" +
             "\n" +
             "See HIVE-4409 for more details."),
+    ALLOW_INCOMPATIBLE_COL_TYPE_CHANGES_TABLE_SERDES("metastore.allow.incompatible.col.type.changes.serdes",
+        "hive.metastore.allow.incompatible.col.type.changes.serdes", "org.apache.hadoop.hive.kudu.KuduSerDe",
+        "Comma-separated list of table serdes which are allowed to make incompatible column type\n" +
+        "changes. This configuration is only applicable if metastore.disallow.incompatible.col.type.changes\n" +
+        "is true."),
     DUMP_CONFIG_ON_CREATION("metastore.dump.config.on.creation", "metastore.dump.config.on.creation", true,
         "If true, a printout of the config file (minus sensitive values) will be dumped to the " +
             "log whenever newMetastoreConf() is called.  Can produce a lot of logs"),
@@ -947,6 +960,19 @@ public class MetastoreConf {
             + "which is used by HMS Server to fetch the extended tables/partitions information \n"
             + "based on the data processor capabilities \n"
             + " This class should implement the IMetaStoreMetadataTransformer interface"),
+    METASTORE_METADATA_TRANSFORMER_TRANSLATED_TO_EXTERNAL_FOLLOWS_RENAMES(
+        "metastore.metadata.transformer.translated.to.external.follows.renames",
+        "metastore.metadata.transformer.translated.to.external.follows.renames", true,
+        "Wether TRANSLATED_TO_EXTERNAL tables should follow renames. In case the default directory exists "
+            + "the strategy of metastore.metadata.transformer.location.mode is used"),
+    METASTORE_METADATA_TRANSFORMER_LOCATION_MODE("metastore.metadata.transformer.location.mode",
+        "metastore.metadata.transformer.location.mode", "prohibit",
+        new StringSetValidator("seqsuffix", "seqprefix", "prohibit"),
+        "Defines the strategy to use in case the default location for a translated table already exists.\n"
+            + "  seqsuffix: add a '_N' suffix to the table name to get a unique location (table,table_1,table_2,...)\n"
+            + "  seqprefix: adds a 'N_' prefix to the table name to get a unique location (table,1_table,2_table,...)\n"
+            + "  prohibit: do not allow alternate locations; throw error if the default is not available\n"),
+
     MULTITHREADED("javax.jdo.option.Multithreaded", "javax.jdo.option.Multithreaded", true,
         "Set this to true if multiple threads access metastore through JDO concurrently."),
     MAX_OPEN_TXNS("metastore.max.open.txns", "hive.max.open.txns", 100000,
@@ -1243,7 +1269,7 @@ public class MetastoreConf {
             " If org.apache.hive.hcatalog.listener.DbNotificationListener is configured along with other transactional event" +
             " listener implementation classes, make sure org.apache.hive.hcatalog.listener.DbNotificationListener is placed at" +
             " the end of the list."),
-    TRUNCATE_ACID_USE_BASE("metastore.acid.truncate.usebase", "hive.metastore.acid.truncate.usebase", true,
+    TRUNCATE_ACID_USE_BASE("metastore.acid.truncate.usebase", "hive.metastore.acid.truncate.usebase", false,
         "If enabled, truncate for transactional tables will not delete the data directories,\n" +
         "rather create a new base directory with no datafiles."),
     TRY_DIRECT_SQL("metastore.try.direct.sql", "hive.metastore.try.direct.sql", true,
@@ -1356,6 +1382,8 @@ public class MetastoreConf {
     HIVE_IN_TEST("hive.in.test", "hive.in.test", false, "internal usage only, true in test mode"),
     HIVE_IN_TEZ_TEST("hive.in.tez.test", "hive.in.tez.test", false,
         "internal use only, true when in testing tez"),
+    HIVE_IN_TEST_ICEBERG("hive.in.iceberg.test", "hive.in.iceberg.test", false,
+        "internal usage only, true when testing iceberg"),
     // We need to track this as some listeners pass it through our config and we need to honor
     // the system properties.
     HIVE_AUTHORIZATION_MANAGER("hive.security.authorization.manager",

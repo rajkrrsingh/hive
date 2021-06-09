@@ -21,13 +21,13 @@ import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
+import org.apache.hadoop.hdfs.protocol.SnapshotException;
 import org.apache.hadoop.hive.common.TableName;
 import org.apache.hadoop.hive.common.repl.ReplConst;
 import org.apache.hadoop.hive.common.repl.ReplScope;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.TableType;
 import org.apache.hadoop.hive.metastore.api.ColumnStatistics;
-import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.hadoop.hive.metastore.api.InvalidOperationException;
 import org.apache.hadoop.hive.metastore.utils.StringUtils;
@@ -139,8 +139,6 @@ public class ReplUtils {
   public static final String RANGER_HIVE_SERVICE_NAME = "ranger.plugin.hive.service.name";
 
   public static final String RANGER_CONFIGURATION_RESOURCE_NAME = "ranger-hive-security.xml";
-
-  public static final String TARGET_OF_REPLICATION = "repl.target.for";
 
   // Service name for hive.
   public static final String REPL_HIVE_SERVICE = "hive";
@@ -260,15 +258,6 @@ public class ReplUtils {
     return false;
   }
 
-  public static boolean isTargetOfReplication(Database db) {
-    assert (db != null);
-    Map<String, String> m = db.getParameters();
-    if ((m != null) && (m.containsKey(TARGET_OF_REPLICATION))) {
-      return !StringUtils.isEmpty(m.get(TARGET_OF_REPLICATION));
-    }
-    return false;
-  }
-
   public static String getNonEmpty(String configParam, HiveConf hiveConf, String errorMsgFormat)
           throws SemanticException {
     String val = hiveConf.get(configParam);
@@ -344,7 +333,12 @@ public class ReplUtils {
 
   public static int handleException(boolean isReplication, Throwable e, String nonRecoverablePath,
                                     ReplicationMetricCollector metricCollector, String stageName, HiveConf conf){
-    int errorCode = ErrorMsg.getErrorMsg(e.getMessage()).getErrorCode();
+    int errorCode;
+    if (isReplication && e instanceof SnapshotException) {
+      errorCode = ErrorMsg.getErrorMsg("SNAPSHOT_ERROR").getErrorCode();
+    } else {
+      errorCode = ErrorMsg.getErrorMsg(e.getMessage()).getErrorCode();
+    }
     if(isReplication){
       try {
         if (nonRecoverablePath != null) {

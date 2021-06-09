@@ -22,6 +22,7 @@ package org.apache.iceberg.mr.hive;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.stream.Collectors;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.lockmgr.DbTxnManager;
@@ -81,7 +82,7 @@ public class TestHiveShell {
 
   public void start() {
     // Create a copy of the HiveConf for the metastore
-    metastore.start(new HiveConf(hs2Conf));
+    metastore.start(new HiveConf(hs2Conf), 10);
     hs2Conf.setVar(HiveConf.ConfVars.METASTOREURIS, metastore.hiveConf().getVar(HiveConf.ConfVars.METASTOREURIS));
     hs2Conf.setVar(HiveConf.ConfVars.METASTOREWAREHOUSE,
         metastore.hiveConf().getVar(HiveConf.ConfVars.METASTOREWAREHOUSE));
@@ -154,6 +155,18 @@ public class TestHiveShell {
     }
   }
 
+  /**
+   * Used for debugging. Please do not remove even if unused in the codebase.
+   * @param statement EXPLAIN statement
+   * @return EXPLAIN statement output in a single String which is IDE friendly for viewing
+   */
+  public String executeExplain(String statement) {
+    List<Object[]> objects = executeStatement(statement);
+    return objects.stream()
+        .map(o -> (String) o[0])
+        .collect(Collectors.joining("\n"));
+  }
+
   public Configuration getHiveConf() {
     if (session != null) {
       return session.getHiveConf();
@@ -199,6 +212,12 @@ public class TestHiveShell {
     hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_IN_TEST, false);
     // set to true so that the Tez session will create an empty jar for localization
     hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_IN_TEST_IDE, true);
+
+    // enables vectorization on Tez
+    hiveConf.set("tez.mrreader.config.update.properties", "hive.io.file.readcolumn.names,hive.io.file.readcolumn.ids");
+
+    // set lifecycle hooks
+    hiveConf.setVar(HiveConf.ConfVars.HIVE_QUERY_LIFETIME_HOOKS, HiveIcebergQueryLifeTimeHook.class.getName());
 
     return hiveConf;
   }

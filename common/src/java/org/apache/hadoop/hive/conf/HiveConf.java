@@ -77,6 +77,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+
 /**
  * Hive Configuration.
  */
@@ -603,7 +604,16 @@ public class HiveConf extends Configuration {
         false, "Should create single copy task for all the external tables "
         + "within the database default location for external tables, Would require more memory "
         + "for preparing the initial listing, Should be used if the memory "
-        + "requirements can be fulfilled."),
+        + "requirements can be fulfilled. If any specific configuration needs to be passed for these copy task it can"
+        + " be specified using the prefix hive.dbpath."),
+    REPL_EXTERNAL_WAREHOUSE_SINGLE_COPY_TASK_PATHS("hive.repl.external.warehouse.single.copy.task.paths",
+        "", "Comma seperated list of paths for which single copy task shall be created for all the external tables "
+        + "within the locations Would require more memory for preparing the initial listing, Should be used if the memory "
+        + "requirements can be fulfilled. If the directory contains data not part of the database, that data would "
+        + "also get copied, so only locations which contains tables only belonging to the same database should be "
+        + "provided. This has no effect in case of table level replication or if hive.repl.bootstrap.external.tables "
+        + "isn't enabled. If any specific configuration needs to be passed for these copy task it can be specified "
+        + "using the prefix hive.dbpath."),
     REPL_INCLUDE_AUTHORIZATION_METADATA("hive.repl.include.authorization.metadata", false,
             "This configuration will enable security and authorization related metadata along "
                     + "with the hive data and metadata replication. "),
@@ -668,6 +678,18 @@ public class HiveConf extends Configuration {
         + " table or partition level. If hive.exec.parallel \n"
         + "is set to true then max worker threads created for copy can be hive.exec.parallel.thread.number(determines \n"
         + "number of copy tasks in parallel) * hive.repl.parallel.copy.tasks "),
+    REPL_SNAPSHOT_DIFF_FOR_EXTERNAL_TABLE_COPY("hive.repl.externaltable.snapshotdiff.copy",
+        false,"Use snapshot diff for copying data from source to "
+        + "destination cluster for external table in distcp. If true it uses snapshot based distcp for all the paths "
+        + "configured as part of hive.repl.external.warehouse.single.copy.task along with the external warehouse "
+        + "default location."),
+    REPL_SNAPSHOT_OVERWRITE_TARGET_FOR_EXTERNAL_TABLE_COPY("hive.repl.externaltable.snapshot.overwrite.target",
+        true,"If this is enabled, in case the target is modified, when using snapshot for external table"
+        + "data copy, the target data is overwritten and the modifications are removed and the copy is again "
+        + "attempted using the snapshot based approach. If disabled, the replication will fail in case the target is "
+        + "modified."),
+    REPL_STATS_TOP_EVENTS_COUNTS("hive.repl.stats.events.count", 5,
+        "Number of top costliest events that needs to maintained per event type for the replication statistics."),
     LOCALSCRATCHDIR("hive.exec.local.scratchdir",
         "${system:java.io.tmpdir}" + File.separator + "${system:user.name}",
         "Local scratch space for Hive jobs"),
@@ -770,6 +792,8 @@ public class HiveConf extends Configuration {
         "If not set, defaults to the codec extension for text files (e.g. \".gz\"), or no extension otherwise."),
 
     HIVE_IN_TEST("hive.in.test", false, "internal usage only, true in test mode", true),
+    HIVE_IN_TEST_ICEBERG("hive.in.iceberg.test", false, "internal usage only, true when " +
+        "testing iceberg", true),
     HIVE_IN_TEST_SSL("hive.in.ssl.test", false, "internal usage only, true in SSL test mode", true),
     // TODO: this needs to be removed; see TestReplicationScenarios* comments.
     HIVE_IN_TEST_REPL("hive.in.repl.test", false, "internal usage only, true in replication test mode", true),
@@ -1813,7 +1837,13 @@ public class HiveConf extends Configuration {
         "Size of the cache used on reducer side, that stores boundaries of ranges within a PTF " +
         "partition. Used if a query specifies a RANGE type window including an orderby clause." +
         "Set this to 0 to disable this cache."),
-
+    HIVE_PTF_VALUECACHE_SIZE("hive.ptf.valuecache.size", 10000,
+        "Size of the cache used on reducer side, that stores calculated values for ranges within a PTF "
+            + "partition. Set this to 0 to disable this cache."),
+    HIVE_PTF_VALUECACHE_COLLECT_STATISTICS("hive.ptf.valuecache.collect.statistics", false,
+        "Whether to collect cache statistics in PTFValueCache. On extremely hot codepaths, this can be expensive, "
+            + "so it's disabled by default. It's only for development/debugging purposes, "
+            + "execution engine doesn't take advantage of statistics stored in the cache."),
     // CBO related
     HIVE_CBO_ENABLED("hive.cbo.enable", true, "Flag to control enabling Cost Based Optimizations using Calcite framework."),
     HIVE_CBO_FALLBACK_STRATEGY("hive.cbo.fallback.strategy", "CONSERVATIVE",
@@ -1891,7 +1921,7 @@ public class HiveConf extends Configuration {
         "with aggregations will be multiplied by this value. Reducing the value can be useful to\n" +
         "favour incremental rebuild over full rebuild."),
     HIVE_MATERIALIZED_VIEW_FILE_FORMAT("hive.materializedview.fileformat", "ORC",
-        new StringSet("none", "TextFile", "SequenceFile", "RCfile", "ORC"),
+        new StringSet("none", "TextFile", "SequenceFile", "RCfile", "ORC", "parquet"),
         "Default file format for CREATE MATERIALIZED VIEW statement"),
     HIVE_MATERIALIZED_VIEW_SERDE("hive.materializedview.serde",
         "org.apache.hadoop.hive.ql.io.orc.OrcSerde", "Default SerDe used for materialized views"),
@@ -2189,8 +2219,13 @@ public class HiveConf extends Configuration {
       "This value controls whether date type in Parquet files was written using the hybrid or proleptic\n" +
       "calendar. Hybrid is the default."),
     HIVE_PARQUET_TIMESTAMP_LEGACY_CONVERSION_ENABLED("hive.parquet.timestamp.legacy.conversion.enabled", true,
-      "This value controls whether we use former Java time API to convert between timezones on files where timezone\n" +
-      "is not encoded in the metadata. This is for debugging."),
+    "Whether to use former Java date/time APIs to convert between timezones when reading timestamps from " +
+        "Parquet files. The property has no effect when the file contains explicit metadata about the conversion " +
+        "used to write the data; in this case reading conversion is chosen based on the metadata."),
+    HIVE_PARQUET_TIMESTAMP_WRITE_LEGACY_CONVERSION_ENABLED("hive.parquet.timestamp.write.legacy.conversion.enabled", false,
+        "Whether to use former Java date/time APIs to convert between timezones when writing timestamps in " +
+        "Parquet files. Once data are written to the file the effect is permanent (also reflected in the metadata)." +
+        "Changing the value of this property affects only new data written to the file."),
     HIVE_AVRO_TIMESTAMP_SKIP_CONVERSION("hive.avro.timestamp.skip.conversion", false,
         "Some older Hive implementations (pre-3.1) wrote Avro timestamps in a UTC-normalized" +
         "manner, while from version 3.1 until now Hive wrote time zone agnostic timestamps. " +
@@ -2664,6 +2699,10 @@ public class HiveConf extends Configuration {
     HIVE_OPTIMIZE_HMS_QUERY_CACHE_ENABLED("hive.optimize.metadata.query.cache.enabled", true,
         "This property enables caching metadata for repetitive requests on a per-query basis"),
 
+    HIVE_OPTIMIZE_VIEW_CACHE_ENABLED("hive.optimize.view.tables.cache.enabled", true,
+        "This property enables caching of views and their underlying tables. The cache in memory may be stale, but "
+            + " provides an optimization if it is accurate."),
+
     // CTE
     HIVE_CTE_MATERIALIZE_THRESHOLD("hive.optimize.cte.materialize.threshold", 3,
         "If the number of references to a CTE clause exceeds this threshold, Hive will materialize it\n" +
@@ -3001,6 +3040,27 @@ public class HiveConf extends Configuration {
 
     HIVE_TXN_READONLY_ENABLED("hive.txn.readonly.enabled", false,
       "Enables read-only transaction classification and related optimizations"),
+
+    // Configs having to do with DeltaFilesMetricReporter, which collects lists of most recently active tables
+    // with the most number of active/obsolete deltas.
+    HIVE_TXN_ACID_METRICS_MAX_CACHE_SIZE("hive.txn.acid.metrics.max.cache.size", 100,
+        "Size of the ACID metrics cache. Only topN metrics would remain in the cache if exceeded."),
+    HIVE_TXN_ACID_METRICS_CACHE_DURATION("hive.txn.acid.metrics.cache.duration", "7200s",
+        new TimeValidator(TimeUnit.SECONDS),
+        "Maximum lifetime in seconds for an entry in the ACID metrics cache."),
+    HIVE_TXN_ACID_METRICS_REPORTING_INTERVAL("hive.txn.acid.metrics.reporting.interval", "30s",
+        new TimeValidator(TimeUnit.SECONDS),
+        "Reporting period for ACID metrics in seconds."),
+    HIVE_TXN_ACID_METRICS_DELTA_NUM_THRESHOLD("hive.txn.acid.metrics.delta.num.threshold", 100,
+        "The minimum number of active delta files a table/partition must have in order to be included in the ACID metrics report."),
+    HIVE_TXN_ACID_METRICS_OBSOLETE_DELTA_NUM_THRESHOLD("hive.txn.acid.metrics.obsolete.delta.num.threshold", 100,
+        "The minimum number of obsolete delta files a table/partition must have in order to be included in the ACID metrics report."),
+    HIVE_TXN_ACID_METRICS_DELTA_CHECK_THRESHOLD("hive.txn.acid.metrics.delta.check.threshold", "300s",
+        new TimeValidator(TimeUnit.SECONDS),
+        "Deltas not older than this value will not be included in the ACID metrics report."),
+    HIVE_TXN_ACID_METRICS_DELTA_PCT_THRESHOLD("hive.txn.acid.metrics.delta.pct.threshold", 0.01f,
+        "Percentage (fractional) size of the delta files relative to the base directory. Deltas smaller than this threshold " +
+        "count as small deltas. Default 0.01 = 1%.)"),
 
     /**
      * @deprecated Use MetastoreConf.TXN_TIMEOUT
@@ -3750,6 +3810,18 @@ public class HiveConf extends Configuration {
         new TimeValidator(TimeUnit.SECONDS),
         "The timeout for AM registry registration, after which (on attempting to use the\n" +
         "session), we kill it and try to get another one."),
+    HIVE_SERVER2_WM_DELAYED_MOVE("hive.server2.wm.delayed.move", false,
+        "Determines behavior of the wm move trigger when destination pool is full.\n" +
+        "If true, the query will run in source pool as long as possible if destination pool is full;\n" +
+        "if false, the query will be killed if destination pool is full."),
+    HIVE_SERVER2_WM_DELAYED_MOVE_TIMEOUT("hive.server2.wm.delayed.move.timeout", "3600",
+        new TimeValidator(TimeUnit.SECONDS),
+        "The amount of time a delayed move is allowed to run in the source pool,\n" +
+        "when a delayed move session times out, the session is moved to the destination pool.\n" +
+        "A value of 0 indicates no timeout"),
+    HIVE_SERVER2_WM_DELAYED_MOVE_VALIDATOR_INTERVAL("hive.server2.wm.delayed.move.validator.interval", "60",
+        new TimeValidator(TimeUnit.SECONDS),
+        "Interval for checking for expired delayed moves."),
     HIVE_SERVER2_TEZ_DEFAULT_QUEUES("hive.server2.tez.default.queues", "",
         "A list of comma separated values corresponding to YARN queues of the same name.\n" +
         "When HiveServer2 is launched in Tez mode, this configuration needs to be set\n" +
@@ -4180,6 +4252,8 @@ public class HiveConf extends Configuration {
     HIVE_LOAD_DYNAMIC_PARTITIONS_THREAD_COUNT("hive.load.dynamic.partitions.thread", 15,
         new  SizeValidator(1L, true, 1024L, true),
         "Number of threads used to load dynamic partitions."),
+    HIVE_LOAD_DYNAMIC_PARTITIONS_SCAN_SPECIFIC_PARTITIONS("hive.load.dynamic.partitions.scan.specific.partitions", false,
+        "For the dynamic partitioned tables, scan only the specific partitions using the name from the list"),
     // If this is set all move tasks at the end of a multi-insert query will only begin once all
     // outputs are ready
     HIVE_MULTI_INSERT_MOVE_TASKS_SHARE_DEPENDENCIES(
@@ -5099,11 +5173,6 @@ public class HiveConf extends Configuration {
     LLAP_EXTERNAL_SPLITS_TEMP_TABLE_STORAGE_FORMAT("hive.llap.external.splits.temp.table.storage.format",
         "orc", new StringSet("default", "text", "orc"),
         "Storage format for temp tables created using LLAP external client"),
-    LLAP_EXTERNAL_SPLITS_ORDER_BY_FORCE_SINGLE_SPLIT("hive.llap.external.splits.order.by.force.single.split",
-      true,
-      "If LLAP external clients submits ORDER BY queries, force return a single split to guarantee reading\n" +
-        "data out in ordered way. Setting this to false will let external clients read data out in parallel\n" +
-        "losing the ordering (external clients are responsible for guaranteeing the ordering)"),
     LLAP_EXTERNAL_CLIENT_USE_HYBRID_CALENDAR("hive.llap.external.client.use.hybrid.calendar",
         false,
         "Whether to use hybrid calendar for parsing of data/timestamps."),
@@ -5457,7 +5526,10 @@ public class HiveConf extends Configuration {
 
     HIVE_DESCRIBE_PARTITIONED_TABLE_IGNORE_STATS("hive.describe.partitionedtable.ignore.stats", false,
         "Disable partitioned table stats collection for 'DESCRIBE FORMATTED' or 'DESCRIBE EXTENDED' commands."),
-    
+
+    HIVE_SERVER2_ICEBERG_METADATA_GENERATOR_THREADS("hive.server2.iceberg.metadata.generator.threads", 10,
+        "Number of threads used to scan partition directories for data files and update/generate iceberg metadata"),
+
     /* BLOBSTORE section */
 
     HIVE_BLOBSTORE_SUPPORTED_SCHEMES("hive.blobstore.supported.schemes", "s3,s3a,s3n",
@@ -6089,9 +6161,7 @@ public class HiveConf extends Configuration {
   public String getLogIdVar(String defaultValue) {
     String retval = getVar(ConfVars.HIVE_LOG_TRACE_ID);
     if (StringUtils.EMPTY.equals(retval)) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Using the default value passed in for log id: {}", defaultValue);
-      }
+      LOG.debug("Using the default value passed in for log id: {}", defaultValue);
       retval = defaultValue;
     }
     if (retval.length() > LOG_PREFIX_LENGTH) {

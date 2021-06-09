@@ -20,14 +20,17 @@
 package org.apache.iceberg.mr.hive;
 
 import java.io.IOException;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
+import org.apache.hive.iceberg.org.apache.orc.OrcConf;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.data.Record;
+import org.apache.iceberg.mr.Catalogs;
 import org.apache.iceberg.mr.TestHelper;
 import org.apache.iceberg.types.Types;
-import org.apache.orc.OrcConf;
 import org.junit.rules.TemporaryFolder;
 
 import static org.apache.iceberg.types.Types.NestedField.optional;
@@ -59,9 +62,14 @@ public class HiveIcebergStorageHandlerTestUtils {
   }
 
   static TestHiveShell shell() {
+    return shell(Collections.emptyMap());
+  }
+
+  static TestHiveShell shell(Map<String, String> configs) {
     TestHiveShell shell = new TestHiveShell();
     shell.setHiveConfValue("hive.notification.event.poll.interval", "-1");
     shell.setHiveConfValue("hive.tez.exec.print.summary", "true");
+    configs.forEach((k, v) -> shell.setHiveConfValue(k, v));
     // We would like to make sure that ORC reading overrides this config, so reading Iceberg tables could work in
     // systems (like Hive 3.2 and higher) where this value is set to true explicitly.
     shell.setHiveConfValue(OrcConf.FORCE_POSITIONAL_EVOLUTION.getHiveConfName(), "true");
@@ -70,9 +78,13 @@ public class HiveIcebergStorageHandlerTestUtils {
   }
 
   static TestTables testTables(TestHiveShell shell, TestTables.TestTableType testTableType, TemporaryFolder temp)
-      throws IOException {
+          throws IOException {
+    return testTables(shell, testTableType, temp, Catalogs.ICEBERG_DEFAULT_CATALOG_NAME);
+  }
 
-    return testTableType.instance(shell.metastore().hiveConf(), temp);
+  static TestTables testTables(TestHiveShell shell, TestTables.TestTableType testTableType, TemporaryFolder temp,
+                               String catalogName) throws IOException {
+    return testTableType.instance(shell.metastore().hiveConf(), temp, catalogName);
   }
 
   static void init(TestHiveShell shell, TestTables testTables, TemporaryFolder temp, String engine) {
@@ -92,11 +104,18 @@ public class HiveIcebergStorageHandlerTestUtils {
       shell.setHiveSessionValue("hive.vectorized.execution.enabled", "false");
     }
 
+    // Until HADOOP-16435 we have to manually remove the RpcMetrics for every run otherwise we might end up with OOM
+    // We have to initialize the metrics as TestMetrics, so shutdown will remove them
+    DefaultMetricsSystem.instance().init("TestMetrics");
   }
 
   static void close(TestHiveShell shell) throws Exception {
     shell.closeSession();
     shell.metastore().reset();
+
+    // Until HADOOP-16435 we have to manually remove the RpcMetrics for every run otherwise we might end up with OOM
+    DefaultMetricsSystem.shutdown();
+
     // HiveServer2 thread pools are using thread local Hive -> HMSClient objects. These are not cleaned up when the
     // HiveServer2 is stopped. Only Finalizer closes the HMS connections.
     System.gc();

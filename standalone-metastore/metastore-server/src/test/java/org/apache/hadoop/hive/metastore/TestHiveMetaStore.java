@@ -140,6 +140,7 @@ public abstract class TestHiveMetaStore {
     conf.set("hive.key4", "0");
     conf.set("datanucleus.autoCreateTables", "false");
     conf.set("hive.in.test", "true");
+    MetastoreConf.setVar(conf, ConfVars.METASTORE_METADATA_TRANSFORMER_CLASS, " ");
 
     MetaStoreTestUtils.setConfForStandloneMode(conf);
     MetastoreConf.setLongVar(conf, ConfVars.BATCH_RETRIEVE_MAX, 2);
@@ -1275,6 +1276,52 @@ public abstract class TestHiveMetaStore {
     }
   }
 
+
+  @Test
+  public void testDatabaseLocationOnDrop() throws Throwable {
+    try {
+      // clear up any existing databases
+      silentDropDatabase(TEST_DB1_NAME);
+
+      String dbLocation =
+          MetastoreConf.getVar(conf, ConfVars.WAREHOUSE_EXTERNAL) + "/testdb1.db";
+      String mgdLocation =
+          MetastoreConf.getVar(conf, ConfVars.WAREHOUSE) + "/testdb1.db";
+      new DatabaseBuilder()
+          .setName(TEST_DB1_NAME)
+          .setLocation(dbLocation)
+          .setManagedLocation(mgdLocation)
+          .create(client, conf);
+
+      Database db = client.getDatabase(TEST_DB1_NAME);
+
+      assertEquals("name of returned db is different from that of inserted db",
+          TEST_DB1_NAME, db.getName());
+      assertEquals("location of the returned db is different from that of inserted db",
+          warehouse.getDnsPath(new Path(dbLocation)).toString(), db.getLocationUri());
+      assertEquals("managed location of the returned db is different from that of inserted db",
+          warehouse.getDnsPath(new Path(mgdLocation)).toString(), db.getManagedLocationUri());
+
+      client.dropDatabase(TEST_DB1_NAME, true, false, true);
+
+      boolean objectNotExist = false;
+      try {
+        client.getDatabase(TEST_DB1_NAME);
+      } catch (NoSuchObjectException e) {
+        objectNotExist = true;
+      }
+      assertTrue("Database " + TEST_DB1_NAME + " exists ", objectNotExist);
+
+      FileSystem fs = FileSystem.get(new Path(dbLocation).toUri(), conf);
+      assertFalse("Database's location not deleted", fs.exists(new Path(dbLocation)));
+      fs = FileSystem.get(new Path(mgdLocation).toUri(), conf);
+      assertFalse("Database's managed location not deleted", fs.exists(new Path(mgdLocation)));
+    } catch (Throwable e) {
+      System.err.println(StringUtils.stringifyException(e));
+      System.err.println("testDatabaseLocationOnDrop() failed.");
+      throw e;
+    }
+  }
 
   @Test
   public void testSimpleTypeApi() throws Exception {
