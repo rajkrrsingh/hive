@@ -16,32 +16,21 @@
  * limitations under the License.
  */
 
-package org.apache.hive.service.server;
+package org.apache.hadoop.hive.ql.udf;
 
+import org.apache.hadoop.hive.common.type.Timestamp;
+import org.apache.hadoop.hive.common.type.TimestampTZ;
+import org.apache.hadoop.hive.common.type.TimestampTZUtil;
 import org.apache.hadoop.hive.conf.HiveConf;
-import org.apache.hadoop.hive.ql.hooks.HookContext.HookType;
-import org.apache.hadoop.hive.ql.hooks.HookUtils;
+import org.apache.hadoop.hive.ql.session.SessionState;
 
-import java.util.List;
+import java.time.ZoneId;
 
-public class HiveServer2OomHookRunner implements Runnable {
-  private final HiveServer2 hiveServer2;
+public class UDFUtils {
 
-  HiveServer2OomHookRunner(HiveServer2 hiveServer2) {
-    this.hiveServer2 = hiveServer2;
+  public static TimestampTZ getTimestampTZFromTimestamp(Timestamp timestamp) {
+    ZoneId zone = ((SessionState.get() == null) ?
+      new HiveConf().getLocalTimeZone() : SessionState.get().getConf().getLocalTimeZone());
+    return TimestampTZUtil.convert(timestamp, zone);
   }
-
-  @Override
-  public synchronized void run() {
-    try {
-      HiveConf hiveConf = hiveServer2.getHiveConf();
-      List<Runnable> hooks = HookUtils.readHooksFromConf(hiveConf, HookType.HIVE_SERVER2_OOM_HOOKS);
-      for (Runnable runnable : hooks) {
-        runnable.run();
-      }
-    } finally {
-      hiveServer2.stop();
-    }
-  }
-
 }
